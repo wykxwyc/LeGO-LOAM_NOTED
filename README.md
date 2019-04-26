@@ -12,7 +12,6 @@ LeGO-LOAM代码详细解释,可以参考:
 Test without IMU:  
 
 <img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment.jpg" width = 55% height = 55%/>   
-
 <img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment-downward.jpg" width = 55% height = 55%/>  
 
 ROS nodes in LeGO-LOAM:  
