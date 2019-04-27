@@ -11,12 +11,12 @@ LeGO-LOAM代码详细解释,可以参考:
 
 Test without IMU:  
 
-<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment.jpg" width = 55% height = 55%/>   
-<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment-downward.jpg" width = 55% height = 55%/>  
+<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment.jpg" width = 80% height = 80%/>   
+<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-experiment-downward.jpg" width = 80% height = 80%/>  
 
 ROS nodes in LeGO-LOAM:  
 
-<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-nodes.png" width = 55% height = 55%/>
+<img src="https://github.com/wykxwyc/LeGO-LOAM_NOTED/blob/master/lego-loam-nodes.png" width = 80% height = 80%/>
 
 2018-12-28 Forked from LeGO-LOAM: https://github.com/RobustFieldAutonomyLab/LeGO-LOAM
 
