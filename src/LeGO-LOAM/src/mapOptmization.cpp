@@ -97,9 +97,11 @@ private:
     PointType previousRobotPosPoint;
     PointType currentRobotPosPoint;
 
+    // PointType(pcl::PointXYZI)的XYZI分别保存3个方向上的平移和一个索引(cloudKeyPoses3D->points.size())
     pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D;
-    pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 
+    //PointTypePose的XYZI保存和cloudKeyPoses3D一样的内容，另外还保存RPY角度以及一个时间值timeLaserOdometry
+    pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
     
     // 结尾有DS代表是downsize,进行过下采样
     pcl::PointCloud<PointType>::Ptr surroundingKeyPoses;
@@ -512,6 +514,7 @@ public:
 
     void pointAssociateToMap(PointType const * const pi, PointType * const po)
     {
+        // 进行6自由度的变换，先进行旋转，然后再平移
         // 主要进行坐标变换，将局部坐标转换到全局坐标中去	
         float x1 = cYaw * pi->x - sYaw * pi->y;
         float y1 = sYaw * pi->x + cYaw * pi->y;
@@ -745,7 +748,7 @@ public:
         pcl::toROSMsg(*globalMapKeyFramesDS, cloudMsgTemp);
         cloudMsgTemp.header.stamp = ros::Time().fromSec(timeLaserOdometry);
         cloudMsgTemp.header.frame_id = "/camera_init";
-        pubLaserCloudSurround.publish(cloudMsgTemp);  
+        pubLaserCloudSurround.publish(cloudMsgTemp);
 
         globalMapKeyPoses->clear();
         globalMapKeyPosesDS->clear();
@@ -781,8 +784,8 @@ public:
         // 进行半径historyKeyframeSearchRadius内的邻域搜索，
         // currentRobotPosPoint：需要查询的点，
         // pointSearchIndLoop：搜索完的邻域点对应的索引
-        // pointSearchSqDisLoop：搜索完的每个领域点点与传讯点之间的欧式距离
-        // 0：返回的领域个数，为0表示返回全部的邻域点
+        // pointSearchSqDisLoop：搜索完的每个邻域点与当前点之间的欧式距离
+        // 0：返回的邻域个数，为0表示返回全部的邻域点
         kdtreeHistoryKeyPoses->radiusSearch(currentRobotPosPoint, historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
         
         closestHistoryFrameID = -1;
@@ -804,11 +807,14 @@ public:
         *latestSurfKeyFrameCloud += *transformPointCloud(cornerCloudKeyFrames[latestFrameIDLoopCloure], &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
         *latestSurfKeyFrameCloud += *transformPointCloud(surfCloudKeyFrames[latestFrameIDLoopCloure],   &cloudKeyPoses6D->points[latestFrameIDLoopCloure]);
 
-        // 滤掉latestSurfKeyFrameCloud中距离小于0的点???距离值会小于0?
+        // latestSurfKeyFrameCloud中存储的是下面公式计算后的index(intensity):
+        // thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
+        // 滤掉latestSurfKeyFrameCloud中index<0的点??? index值会小于0?
         pcl::PointCloud<PointType>::Ptr hahaCloud(new pcl::PointCloud<PointType>());
         int cloudSize = latestSurfKeyFrameCloud->points.size();
         for (int i = 0; i < cloudSize; ++i){
-            // 距离大于0的点放进hahaCloud队列
+            // intensity不小于0的点放进hahaCloud队列
+            // 初始化时intensity是-1，滤掉那些点
             if ((int)latestSurfKeyFrameCloud->points[i].intensity >= 0){
                 hahaCloud->push_back(latestSurfKeyFrameCloud->points[i]);
             }
@@ -816,6 +822,7 @@ public:
         latestSurfKeyFrameCloud->clear();
         *latestSurfKeyFrameCloud   = *hahaCloud;
 
+        // historyKeyframeSearchNum在utility.h中定义为25，前后25个点进行变换
         for (int j = -historyKeyframeSearchNum; j <= historyKeyframeSearchNum; ++j){
             if (closestHistoryFrameID + j < 0 || closestHistoryFrameID + j > latestFrameIDLoopCloure)
                 continue;
@@ -876,7 +883,7 @@ public:
         if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
             return;
 
-        // 以下在点云icp收敛并且噪声量在一定范围内上进行
+        // 以下在点云icp收敛并且噪声量在一定范围内进行
         if (pubIcpKeyFrames.getNumSubscribers() != 0){
             pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
 			// icp.getFinalTransformation()的返回值是Eigen::Matrix<Scalar, 4, 4>
@@ -938,6 +945,7 @@ public:
                 int numPoses = cloudKeyPoses3D->points.size();
                 for (int i = numPoses-1; i >= 0; --i){
                     // cloudKeyPoses3D的intensity中存的是索引值?
+                    // 保存的索引值从1开始编号；
                     int thisKeyInd = (int)cloudKeyPoses3D->points[i].intensity;
                     PointTypePose thisTransformation = cloudKeyPoses6D->points[thisKeyInd];
                     updateTransformPointCloudSinCos(&thisTransformation);
@@ -980,7 +988,7 @@ public:
             }
 		}else{
 
-            // 下面这部分是不进行闭环的代码
+            // 下面这部分是没有闭环的代码
             // 
             surroundingKeyPoses->clear();
             surroundingKeyPosesDS->clear();
@@ -1002,8 +1010,8 @@ public:
             for (int i = 0; i < surroundingExistingKeyPosesID.size(); ++i){
                 bool existingFlag = false;
                 for (int j = 0; j < numSurroundingPosesDS; ++j){
-                    // 双重循环，不断对比surroundingExistingKeyPosesID和surroundingKeyPosesDS中点的index
-                    // 如果能够找到一样，说明存在相同的关键帧
+                    // 双重循环，不断对比surroundingExistingKeyPosesID[i]和surroundingKeyPosesDS的点的index
+                    // 如果能够找到一样的，说明存在相同的关键点(因为surroundingKeyPosesDS从cloudKeyPoses3D中筛选而来)
                     if (surroundingExistingKeyPosesID[i] == (int)surroundingKeyPosesDS->points[j].intensity){
                         existingFlag = true;
                         break;
@@ -1011,8 +1019,8 @@ public:
                 }
 				
                 if (existingFlag == false){
-                    // 如果surroundingExistingKeyPosesID[i]对比了一轮的已经存在的关键位姿后
-                    // 没有找到关键点，那么把这个点从当前队列中删除
+                    // 如果surroundingExistingKeyPosesID[i]对比了一轮的已经存在的关键位姿的索引后（intensity保存的就是size()）
+                    // 没有找到相同的关键点，那么把这个点从当前队列中删除
                     // 否则的话，existingFlag为true，该关键点就将它留在队列中
                     surroundingExistingKeyPosesID.   erase(surroundingExistingKeyPosesID.   begin() + i);
                     surroundingCornerCloudKeyFrames. erase(surroundingCornerCloudKeyFrames. begin() + i);
@@ -1022,13 +1030,14 @@ public:
                 }
             }
 
+
+            // 上一个两重for循环主要用于删除数据，此处的两重for循环用来添加数据
             for (int i = 0; i < numSurroundingPosesDS; ++i) {
                 bool existingFlag = false;
                 for (auto iter = surroundingExistingKeyPosesID.begin(); iter != surroundingExistingKeyPosesID.end(); ++iter){
-                    // *iter是int数值，是intensity的整数部分
-                    // 这部分比较有技巧，这里把surroundingExistingKeyPosesID内没有对应的点放进一个队列里
-                    // 这个队列专门存放周围存在的关键帧，但是和surroundingExistingKeyPosesID的点不在同一行
-                    // 关于行，需要参考intensity数据的存放格式，整数部分和小数部分代表不同意义
+                    // *iter就是不同的cloudKeyPoses3D->points.size(),
+                    // 把surroundingExistingKeyPosesID内没有对应的点放进一个队列里
+                    // 这个队列专门存放周围存在的关键帧，但是和surroundingExistingKeyPosesID的点没有对应的，也就是新的点
                     if ((*iter) == (int)surroundingKeyPosesDS->points[i].intensity){
                         existingFlag = true;
                         break;
@@ -1096,16 +1105,20 @@ public:
         updatePointAssociateToMapSinCos();
         for (int i = 0; i < laserCloudCornerLastDSNum; i++) {
             pointOri = laserCloudCornerLastDS->points[i];
+            
             // 进行坐标变换,转换到全局坐标中去
             // pointSel:表示选中的点，point select
+            // 输入是pointOri，输出是pointSel
             pointAssociateToMap(&pointOri, &pointSel);
-		
+
             // 进行5邻域搜索，
             // pointSel为需要搜索的点，
             // pointSearchInd搜索完的邻域对应的索引
             // pointSearchSqDis 邻域点与查询点之间的距离
             kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
             
+            // 只有当最远的那个邻域点的距离pointSearchSqDis[4]小于1m时才进行下面的计算
+            // 以下部分的计算是在计算点集的协方差矩阵，Zhang Ji的论文中有提到这部分
             if (pointSearchSqDis[4] < 1.0) {
                 float cx = 0, cy = 0, cz = 0;
                 for (int j = 0; j < 5; j++) {
@@ -1116,6 +1129,7 @@ public:
                 cx /= 5; cy /= 5;  cz /= 5;
 
                 // 下面在求矩阵matA1=[ax,ay,az]t*[ax,ay,az]
+                // 更准确地说应该是在求协方差
                 float a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0;
                 for (int j = 0; j < 5; j++) {
                     float ax = laserCloudCornerFromMapDS->points[pointSearchInd[j]].x - cx;
@@ -1136,6 +1150,9 @@ public:
                 // 特征值：matD1，特征向量：matV1中
                 cv::eigen(matA1, matD1, matV1);
 
+                // 边缘：与较大特征值相对应的特征向量代表边缘线的方向（一大两小，大方向）
+                // 以下这一大块是在计算点到边缘的距离，最后通过系数s来判断是否距离很近
+                // 如果距离很近就认为这个点在边缘上，需要放到laserCloudOri中
                 if (matD1.at<float>(0, 0) > 3 * matD1.at<float>(0, 1)) {
 
                     float x0 = pointSel.x;
@@ -1171,16 +1188,20 @@ public:
 
                     float lc = -((x1 - x2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                + (y1 - y2)*((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1))) / a012 / l12;
-
+                    
+                    // 计算点pointSel到直线的距离（这个距离是乘以了一个系数的）
                     float ld2 = a012 / l12;
 
                     float s = 1 - 0.9 * fabs(ld2);
-
+                    
+                    // coeff代表系数的意思
                     coeff.x = s * la;
                     coeff.y = s * lb;
                     coeff.z = s * lc;
                     coeff.intensity = s * ld2;
-
+                    
+                    // s越大说明ld2越小(离边缘线越近)，这样就说明点pointOri在直线上
+                    // 所以就应该认为这个点是边缘点
                     if (s > 0.1) {
                         laserCloudOri->push_back(pointOri);
                         coeffSel->push_back(coeff);
@@ -1203,16 +1224,30 @@ public:
                     matA0.at<float>(j, 1) = laserCloudSurfFromMapDS->points[pointSearchInd[j]].y;
                     matA0.at<float>(j, 2) = laserCloudSurfFromMapDS->points[pointSearchInd[j]].z;
                 }
+
+                // matB0是一个5x1的矩阵
+                // matB0 = cv::Mat (5, 1, CV_32F, cv::Scalar::all(-1));
+                // matX0是3x1的矩阵
+                // 求解方程matA0*matX0=matB0
+                // 公式其实是在求由matA0中的点构成的平面的法向量matX0
                 cv::solve(matA0, matB0, matX0, cv::DECOMP_QR);
 
+                // [pa,pb,pc,pd]=[matX0,pd]
+                // 正常情况下（见后面planeValid判断条件），应该是
+                // pa * laserCloudSurfFromMapDS->points[pointSearchInd[j]].x +
+                // pb * laserCloudSurfFromMapDS->points[pointSearchInd[j]].y +
+                // pc * laserCloudSurfFromMapDS->points[pointSearchInd[j]].z = -1
+                // 所以pd设置为1
                 float pa = matX0.at<float>(0, 0);
                 float pb = matX0.at<float>(1, 0);
                 float pc = matX0.at<float>(2, 0);
                 float pd = 1;
 
+                // 对[pa,pb,pc,pd]进行单位化
                 float ps = sqrt(pa * pa + pb * pb + pc * pc);
                 pa /= ps; pb /= ps; pc /= ps; pd /= ps;
 
+                // 求解后再次检查平面是否是有效平面
                 bool planeValid = true;
                 for (int j = 0; j < 5; j++) {
                     if (fabs(pa * laserCloudSurfFromMapDS->points[pointSearchInd[j]].x +
@@ -1226,6 +1261,8 @@ public:
                 if (planeValid) {
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
 
+                    // 后面部分相除求的是[pa,pb,pc,pd]与pointSel的夹角余弦值(两个sqrt，其实并不是余弦值)
+                    // 这个夹角余弦值越小越好，越小证明所求的[pa,pb,pc,pd]与平面越垂直
                     float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
                             + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
 
@@ -1234,6 +1271,7 @@ public:
                     coeff.z = s * pc;
                     coeff.intensity = s * pd2;
 
+                    // 判断是否是合格平面，是就加入laserCloudOri
                     if (s > 0.1) {
                         laserCloudOri->push_back(pointOri);
                         coeffSel->push_back(coeff);
@@ -1344,9 +1382,12 @@ public:
     }
 
     void scan2MapOptimization(){
-
+        // laserCloudCornerFromMapDSNum是extractSurroundingKeyFrames()函数最后降采样得到的coner点云数
+        // laserCloudSurfFromMapDSNum是extractSurroundingKeyFrames()函数降采样得到的surface点云数
         if (laserCloudCornerFromMapDSNum > 10 && laserCloudSurfFromMapDSNum > 100) {
 
+            // laserCloudCornerFromMapDS和laserCloudSurfFromMapDS的来源有2个：
+            // 当有闭环时，来源是：recentCornerCloudKeyFrames，没有闭环时，来源surroundingCornerCloudKeyFrames
             kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
@@ -1473,6 +1514,7 @@ public:
         pcl::PointCloud<PointType>::Ptr thisSurfKeyFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr thisOutlierKeyFrame(new pcl::PointCloud<PointType>());
 
+        // PCL::copyPointCloud(const pcl::PCLPointCloud2 &cloud_in,pcl::PCLPointCloud2 &cloud_out )   
         pcl::copyPointCloud(*laserCloudCornerLastDS,  *thisCornerKeyFrame);
         pcl::copyPointCloud(*laserCloudSurfLastDS,    *thisSurfKeyFrame);
         pcl::copyPointCloud(*laserCloudOutlierLastDS, *thisOutlierKeyFrame);
@@ -1584,3 +1626,6 @@ int main(int argc, char** argv)
 
     return 0;
 }
+
+
+
