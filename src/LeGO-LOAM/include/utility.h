@@ -76,7 +76,7 @@ extern const string imuTopic = "/imu/data";
 
 
 extern const float sensorMountAngle = 0.0;
-extern const float segmentTheta = 1.0472;
+extern const float segmentTheta = 1.0472; // segmentTheta=1.0472<==>60度,在imageProjection中用于判断平面
 extern const int segmentValidPointNum = 5;
 extern const int segmentValidLineNum = 3;
 extern const float segmentAlphaX = ang_res_x / 180.0 * M_PI;

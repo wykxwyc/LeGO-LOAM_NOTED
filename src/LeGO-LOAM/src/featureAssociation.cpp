@@ -316,10 +316,12 @@ public:
 
     void ShiftToStartIMU(float pointTime)
     {
+        // 下面三个量表示的是世界坐标系下，从start到cur的坐标的漂移
         imuShiftFromStartXCur = imuShiftXCur - imuShiftXStart - imuVeloXStart * pointTime;
         imuShiftFromStartYCur = imuShiftYCur - imuShiftYStart - imuVeloYStart * pointTime;
         imuShiftFromStartZCur = imuShiftZCur - imuShiftZStart - imuVeloZStart * pointTime;
 
+        // 从世界坐标系变换到start坐标系
         float x1 = cosImuYawStart * imuShiftFromStartXCur - sinImuYawStart * imuShiftFromStartZCur;
         float y1 = imuShiftFromStartYCur;
         float z1 = sinImuYawStart * imuShiftFromStartXCur + cosImuYawStart * imuShiftFromStartZCur;
@@ -337,24 +339,32 @@ public:
     {
         // imuVeloXStart,imuVeloYStart,imuVeloZStart是点云索引i=0时刻的速度
         // 此处计算的是相对于初始时刻i=0时的相对速度
+        // 这个相对速度在世界坐标系下
         imuVeloFromStartXCur = imuVeloXCur - imuVeloXStart;
         imuVeloFromStartYCur = imuVeloYCur - imuVeloYStart;
         imuVeloFromStartZCur = imuVeloZCur - imuVeloZStart;
 
-        // 下面的公式推导与我理解的有些偏差，某几项刚好相差一个正负号，可能是如下原因：
-        // 因为是把后面的点投影到初始时刻上去，
-        // 因此旋转的rpy角度需要考虑成右手坐标系时rpy的负方向
+        // ！！！下面从世界坐标系转换到start坐标系，roll,pitch,yaw要取负值
         // 首先绕y轴进行旋转
+        //    |cosry   0   sinry|
+        // Ry=|0       1       0|
+        //    |-sinry  0   cosry|
         float x1 = cosImuYawStart * imuVeloFromStartXCur - sinImuYawStart * imuVeloFromStartZCur;
         float y1 = imuVeloFromStartYCur;
         float z1 = sinImuYawStart * imuVeloFromStartXCur + cosImuYawStart * imuVeloFromStartZCur;
 
-        // 绕x轴旋转
+        // 绕当前x轴旋转(-pitch)的角度
+        //    |1     0        0|
+        // Rx=|0   cosrx -sinrx|
+        //    |0   sinrx  cosrx|
         float x2 = x1;
         float y2 = cosImuPitchStart * y1 + sinImuPitchStart * z1;
         float z2 = -sinImuPitchStart * y1 + cosImuPitchStart * z1;
 
-        // 绕z轴旋转
+        // 绕当前z轴旋转(-roll)的角度
+        //     |cosrz  -sinrz  0|
+        //  Rz=|sinrz  cosrz   0|
+        //     |0       0      1|
         imuVeloFromStartXCur = cosImuRollStart * x2 + sinImuRollStart * y2;
         imuVeloFromStartYCur = -sinImuRollStart * x2 + cosImuRollStart * y2;
         imuVeloFromStartZCur = z2;
@@ -365,29 +375,43 @@ public:
     {
         // 因为在adjustDistortion函数中有对xyz的坐标进行交换的过程
         // 交换的过程是x=原来的y，y=原来的z，z=原来的x
-        // 所以下面其实是绕原先的x轴在旋转，对应的是roll角
-        // 因为是要把后来的角度变换到原先的坐标系中，所以角度需要加负值，
-        // 即imuRollCur=-imuRollCur，和函数VeloToStartIMU()中的类似
-        // 这部分的坐标变换是将坐标变换到imu的原点(最初始的时刻)
+        // 所以下面其实是绕Z轴(原先的x轴)旋转，对应的是roll角
+        //
+        //     |cosrz  -sinrz  0|
+        //  Rz=|sinrz  cosrz   0|
+        //     |0       0      1|
+        // [x1,y1,z1]^T=Rz*[x,y,z]
+        //
+        // 因为在imuHandler中进行过坐标变换，
+        // 所以下面的roll其实已经对应于新坐标系中(X-Y-Z)的yaw
         float x1 = cos(imuRollCur) * p->x - sin(imuRollCur) * p->y;
         float y1 = sin(imuRollCur) * p->x + cos(imuRollCur) * p->y;
         float z1 = p->z;
 
-        // 绕原先的y轴旋转
+        // 绕X轴(原先的y轴)旋转
+        // 
+        // [x2,y2,z2]^T=Rx*[x1,y1,z1]
+        //    |1     0        0|
+        // Rx=|0   cosrx -sinrx|
+        //    |0   sinrx  cosrx|
         float x2 = x1;
         float y2 = cos(imuPitchCur) * y1 - sin(imuPitchCur) * z1;
         float z2 = sin(imuPitchCur) * y1 + cos(imuPitchCur) * z1;
 
-        // 绕原先的z轴旋转
+        // 最后再绕Y轴(原先的Z轴)旋转
+        //    |cosry   0   sinry|
+        // Ry=|0       1       0|
+        //    |-sinry  0   cosry|
         float x3 = cos(imuYawCur) * x2 + sin(imuYawCur) * z2;
         float y3 = y2;
         float z3 = -sin(imuYawCur) * x2 + cos(imuYawCur) * z2;
 
-        // 下面部分的代码功能是从imu坐标的原点变换到i=0时imu的初始时刻，
+        // 下面部分的代码功能是从imu坐标的原点变换到i=0时imu的初始时刻(从世界坐标系变换到start坐标系)
         // 变换方式和函数VeloToStartIMU()中的类似
-        // 感觉这边的变换公式错掉了，Cur-->原点-->Start这两次变换中，
-        // 前一次是逆变换，角度为负，后一次是正变换，角度应该为正才对?
-        // ?????
+        // 变换顺序：Cur-->世界坐标系-->Start，这两次变换中，
+        // 前一次是正变换，角度为正，后一次是逆变换，角度应该为负
+        // 可以参考：
+        // https://blog.csdn.net/wykxwyc/article/details/101712524
         float x4 = cosImuYawStart * x3 - sinImuYawStart * z3;
         float y4 = y3;
         float z4 = sinImuYawStart * x3 + cosImuYawStart * z3;
@@ -397,6 +421,8 @@ public:
         float z5 = -sinImuPitchStart * y4 + cosImuPitchStart * z4;
 
         // 绕z轴(原先的x轴)变换角度到初始imu时刻，另外需要加上imu的位移漂移
+        // 后面加上的 imuShiftFromStart.. 表示从start时刻到cur时刻的漂移，
+        // (imuShiftFromStart.. 在start坐标系下)
         p->x = cosImuRollStart * x5 + sinImuRollStart * y5 + imuShiftFromStartXCur;
         p->y = -sinImuRollStart * x5 + cosImuRollStart * y5 + imuShiftFromStartYCur;
         p->z = z5 + imuShiftFromStartZCur;
@@ -411,18 +437,43 @@ public:
         float accY = imuAccY[imuPointerLast];
         float accZ = imuAccZ[imuPointerLast];
 
+        // 先绕Z轴(原x轴)旋转,下方坐标系示意imuHandler()中加速度的坐标轴交换
+        //  z->Y
+        //  ^  
+        //  |    ^ y->X
+        //  |   /
+        //  |  /
+        //  | /
+        //  -----> x->Z
+        //
+        //     |cosrz  -sinrz  0|
+        //  Rz=|sinrz  cosrz   0|
+        //     |0       0      1|
+        // [x1,y1,z1]^T=Rz*[accX,accY,accZ]
+        // 因为在imuHandler中进行过坐标变换，
+        // 所以下面的roll其实已经对应于新坐标系中(X-Y-Z)的yaw
         float x1 = cos(roll) * accX - sin(roll) * accY;
         float y1 = sin(roll) * accX + cos(roll) * accY;
         float z1 = accZ;
 
+        // 绕X轴(原y轴)旋转
+        // [x2,y2,z2]^T=Rx*[x1,y1,z1]
+        //    |1     0        0|
+        // Rx=|0   cosrx -sinrx|
+        //    |0   sinrx  cosrx|
         float x2 = x1;
         float y2 = cos(pitch) * y1 - sin(pitch) * z1;
         float z2 = sin(pitch) * y1 + cos(pitch) * z1;
 
+        // 最后再绕Y轴(原z轴)旋转
+        //    |cosry   0   sinry|
+        // Ry=|0       1       0|
+        //    |-sinry  0   cosry|
         accX = cos(yaw) * x2 + sin(yaw) * z2;
         accY = y2;
         accZ = -sin(yaw) * x2 + cos(yaw) * z2;
 
+        // 进行位移，速度，角度量的累加
         int imuPointerBack = (imuPointerLast + imuQueLength - 1) % imuQueLength;
         double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
         if (timeDiff < scanPeriod) {
@@ -448,6 +499,7 @@ public:
         tf::quaternionMsgToTF(imuIn->orientation, orientation);
         tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
 
+        // 加速度去除重力影响，同时坐标轴进行变换
         float accX = imuIn->linear_acceleration.y - sin(roll) * cos(pitch) * 9.81;
         float accY = imuIn->linear_acceleration.z - cos(roll) * cos(pitch) * 9.81;
         float accZ = imuIn->linear_acceleration.x + sin(pitch) * 9.81;
@@ -510,6 +562,7 @@ public:
 
         for (int i = 0; i < cloudSize; i++) {
             // 这里xyz与laboshin_loam代码中的一样经过坐标轴变换
+            // imuhandler() 中相同的坐标变换
             point.x = segmentedCloud->points[i].y;
             point.y = segmentedCloud->points[i].z;
             point.z = segmentedCloud->points[i].x;
@@ -541,6 +594,7 @@ public:
                     ori -= 2 * M_PI;
             }
 
+            // 用 point.intensity 来保存时间
             float relTime = (ori - segInfo.startOrientation) / segInfo.orientationDiff;
             point.intensity = int(segmentedCloud->points[i].intensity) + scanPeriod * relTime;
 
@@ -688,7 +742,8 @@ public:
         }
     }
 
-    // 标记阻塞点??? 阻塞点是哪种点???
+    // 阻塞点是哪种点?
+    // 阻塞点指点云之间相互遮挡，而且又靠得很近的点
     void markOccludedPoints()
     {
         int cloudSize = segmentedCloud->points.size();
@@ -799,7 +854,7 @@ public:
                 int smallestPickedNum = 0;
                 for (int k = sp; k <= ep; k++) {
                     int ind = cloudSmoothness[k].ind;
-                    // 平面点只从地面点中进行选择???为什么要这样做???
+                    // 平面点只从地面点中进行选择? 为什么要这样做?
                     if (cloudNeighborPicked[ind] == 0 &&
                         cloudCurvature[ind] < surfThreshold &&
                         segInfo.segmentedCloudGroundFlag[ind] == true) {
@@ -926,6 +981,7 @@ public:
 
     void TransformToStart(PointType const * const pi, PointType * const po)
     {
+        // intensity代表的是时间戳，s表示一个时间长度
         float s = 10 * (pi->intensity - int(pi->intensity));
 
         float rx = s * transformCur[0];
@@ -1756,6 +1812,10 @@ public:
         imuVeloFromStartY = imuVeloFromStartYCur;
         imuVeloFromStartZ = imuVeloFromStartZCur;
 
+        // 关于下面负号的说明：
+        // transformCur是在Cur坐标系下的 p_start=R*p_cur+t
+        // R和t是在Cur坐标系下的
+        // 而imuAngularFromStart是在start坐标系下的，所以需要加负号
         if (imuAngularFromStartX != 0 || imuAngularFromStartY != 0 || imuAngularFromStartZ != 0){
             transformCur[0] = - imuAngularFromStartY;
             transformCur[1] = - imuAngularFromStartZ;
@@ -1958,6 +2018,8 @@ public:
         calculateSmoothness();
 
         // 标记阻塞点??? 阻塞点是什么点???
+        // 参考了csdn若愚maimai大佬的博客，这里的阻塞点指过近的点
+        // 指在点云中可能出现的互相遮挡的情况
         markOccludedPoints();
 
         // 特征抽取，然后分别保存到cornerPointsSharp等等队列中去

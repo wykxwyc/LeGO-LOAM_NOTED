@@ -170,12 +170,20 @@ private:
     bool newLaserOdometry;
     bool newLaserCloudOutlierLast;
 
-
     float transformLast[6];
+
+    /*************高频转换量**************/
+    // odometry计算得到的到世界坐标系下的转移矩阵
     float transformSum[6];
+    // 转移增量，只使用了后三个平移增量
     float transformIncre[6];
+
+    /*************低频转换量*************/
+    // 以起始位置为原点的世界坐标系下的转换矩阵（猜测与调整的对象）
     float transformTobeMapped[6];
+    // 存放mapping之前的Odometry计算的世界坐标系的转换矩阵（注：低频量，不一定与transformSum一样）
     float transformBefMapped[6];
+    // 存放mapping之后的经过mapping微调之后的转换矩阵
     float transformAftMapped[6];
 
 
@@ -227,6 +235,7 @@ public:
     mapOptimization():
         nh("~")
     {
+        // 用于闭环图优化的参数设置，使用gtsam库
     	ISAM2Params parameters;
 		parameters.relinearizeThreshold = 0.01;
 		parameters.relinearizeSkip = 1;
@@ -246,6 +255,7 @@ public:
         pubIcpKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/corrected_cloud", 2);
         pubRecentKeyFrames = nh.advertise<sensor_msgs::PointCloud2>("/recent_cloud", 2);
 
+        // 设置滤波时创建的体素大小为0.2m/0.4m立方体,下面的单位为m
         downSizeFilterCorner.setLeafSize(0.2, 0.2, 0.2);
         downSizeFilterSurf.setLeafSize(0.4, 0.4, 0.4);
         downSizeFilterOutlier.setLeafSize(0.4, 0.4, 0.4);
@@ -353,8 +363,11 @@ public:
         matB0 = cv::Mat (5, 1, CV_32F, cv::Scalar::all(-1));
         matX0 = cv::Mat (3, 1, CV_32F, cv::Scalar::all(0));
 
+        // matA1为边缘特征的协方差矩阵
         matA1 = cv::Mat (3, 3, CV_32F, cv::Scalar::all(0));
+        // matA1的特征值
         matD1 = cv::Mat (1, 3, CV_32F, cv::Scalar::all(0));
+        // matA1的特征向量，对应于matD1存储
         matV1 = cv::Mat (3, 3, CV_32F, cv::Scalar::all(0));
 
         isDegenerate = false;
@@ -372,7 +385,6 @@ public:
 
         latestFrameID = 0;
     }
-
 
     // 将坐标转移到世界坐标系下,得到可用于建图的Lidar坐标，即修改了transformTobeMapped的值
     void transformAssociateToMap()
@@ -498,6 +510,7 @@ public:
     }
 
     void updatePointAssociateToMapSinCos(){
+        // 先提前求好roll,pitch,yaw的sin和cos值
         cRoll = cos(transformTobeMapped[0]);
         sRoll = sin(transformTobeMapped[0]);
 
@@ -516,14 +529,28 @@ public:
     {
         // 进行6自由度的变换，先进行旋转，然后再平移
         // 主要进行坐标变换，将局部坐标转换到全局坐标中去	
+
+        // 先绕z轴旋转
+        //     |cosrz  -sinrz  0|
+        //  Rz=|sinrz  cosrz   0|
+        //     |0       0      1|
+        // [x1,y1,z1]^T=Rz*[pi->x,pi->y,pi->z]
         float x1 = cYaw * pi->x - sYaw * pi->y;
         float y1 = sYaw * pi->x + cYaw * pi->y;
         float z1 = pi->z;
 
+        // [x2,y2,z2]^T=Rx*[x1,y1,z1]
+        //    |1     0        0|
+        // Rx=|0   cosrx -sinrx|
+        //    |0   sinrx  cosrx|
         float x2 = x1;
         float y2 = cRoll * y1 - sRoll * z1;
         float z2 = sRoll * y1 + cRoll * z1;
 
+        // 最后再绕Y轴旋转，然后加上平移
+        //    |cosry   0   sinry|
+        // Ry=|0       1       0|
+        //    |-sinry  0   cosry|
         po->x = cPitch * x2 + sPitch * z2 + tX;
         po->y = y2 + tY;
         po->z = -sPitch * x2 + cPitch * z2 + tZ;
@@ -656,7 +683,6 @@ public:
     }
 
     void publishTF(){
-
         geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw
                                   (transformAftMapped[2], -transformAftMapped[0], -transformAftMapped[1]);
 
@@ -1030,7 +1056,6 @@ public:
                 }
             }
 
-
             // 上一个两重for循环主要用于删除数据，此处的两重for循环用来添加数据
             for (int i = 0; i < numSurroundingPosesDS; ++i) {
                 bool existingFlag = false;
@@ -1106,7 +1131,7 @@ public:
         for (int i = 0; i < laserCloudCornerLastDSNum; i++) {
             pointOri = laserCloudCornerLastDS->points[i];
             
-            // 进行坐标变换,转换到全局坐标中去
+            // 进行坐标变换,转换到全局坐标中去（世界坐标系）
             // pointSel:表示选中的点，point select
             // 输入是pointOri，输出是pointSel
             pointAssociateToMap(&pointOri, &pointSel);
@@ -1120,6 +1145,7 @@ public:
             // 只有当最远的那个邻域点的距离pointSearchSqDis[4]小于1m时才进行下面的计算
             // 以下部分的计算是在计算点集的协方差矩阵，Zhang Ji的论文中有提到这部分
             if (pointSearchSqDis[4] < 1.0) {
+                // 先求5个样本的平均值
                 float cx = 0, cy = 0, cz = 0;
                 for (int j = 0; j < 5; j++) {
                     cx += laserCloudCornerFromMapDS->points[pointSearchInd[j]].x;
@@ -1128,10 +1154,11 @@ public:
                 }
                 cx /= 5; cy /= 5;  cz /= 5;
 
-                // 下面在求矩阵matA1=[ax,ay,az]t*[ax,ay,az]
-                // 更准确地说应该是在求协方差
+                // 下面在求矩阵matA1=[ax,ay,az]^t*[ax,ay,az]
+                // 更准确地说应该是在求协方差matA1
                 float a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0;
                 for (int j = 0; j < 5; j++) {
+                    // ax代表的是x-cx,表示均值与每个实际值的差值，求取5个之后再次取平均，得到matA1
                     float ax = laserCloudCornerFromMapDS->points[pointSearchInd[j]].x - cx;
                     float ay = laserCloudCornerFromMapDS->points[pointSearchInd[j]].y - cy;
                     float az = laserCloudCornerFromMapDS->points[pointSearchInd[j]].z - cz;
@@ -1166,6 +1193,7 @@ public:
                     float z2 = cz - 0.1 * matV1.at<float>(0, 2);
 
                     // 这边是在求[(x0-x1),(y0-y1),(z0-z1)]与[(x0-x2),(y0-y2),(z0-z2)]叉乘得到的向量的模长
+                    // 这个模长是由0.2*V1[0]和点[x0,y0,z0]构成的平行四边形的面积
                     // 因为[(x0-x1),(y0-y1),(z0-z1)]x[(x0-x2),(y0-y2),(z0-z2)]=[XXX,YYY,ZZZ],
                     // [XXX,YYY,ZZZ]=[(y0-y1)(z0-z2)-(y0-y2)(z0-z1),-(x0-x1)(z0-z2)+(x0-x2)(z0-z1),(x0-x1)(y0-y2)-(x0-x2)(y0-y1)]
                     float a012 = sqrt(((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1))
@@ -1176,10 +1204,12 @@ public:
                                     * ((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1)));
 
                     // l12表示的是0.2*(||V1[0]||)
+                    // 也就是平行四边形一条底的长度
                     float l12 = sqrt((x1 - x2)*(x1 - x2) + (y1 - y2)*(y1 - y2) + (z1 - z2)*(z1 - z2));
 
                     // 求叉乘结果[la',lb',lc']=[(x1-x2),(y1-y2),(z1-z2)]x[XXX,YYY,ZZZ]
                     // [la,lb,lc]=[la',lb',lc']/a012/l12
+                    // LLL=[la,lb,lc]是0.2*V1[0]这条高上的单位法向量。||LLL||=1；
                     float la = ((y1 - y2)*((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
                               + (z1 - z2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1))) / a012 / l12;
 
@@ -1189,19 +1219,27 @@ public:
                     float lc = -((x1 - x2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                + (y1 - y2)*((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1))) / a012 / l12;
                     
-                    // 计算点pointSel到直线的距离（这个距离是乘以了一个系数的）
+                    // 计算点pointSel到直线的距离
+                    // 这里需要特别说明的是ld2代表的是点pointSel到过点[cx,cy,cz]的方向向量直线的距离
                     float ld2 = a012 / l12;
 
+                    // 如果在最理想的状态的话，ld2应该为0，表示点在直线上
+                    // 最理想状态s=1；
                     float s = 1 - 0.9 * fabs(ld2);
                     
                     // coeff代表系数的意思
+                    // coff用于保存距离的方向向量
                     coeff.x = s * la;
                     coeff.y = s * lb;
                     coeff.z = s * lc;
+
+                    // intensity本质上构成了一个核函数，ld2越接近于1，增长越慢
+                    // intensity=(1-0.9*ld2)*ld2=ld2-0.9*ld2*ld2
                     coeff.intensity = s * ld2;
                     
-                    // s越大说明ld2越小(离边缘线越近)，这样就说明点pointOri在直线上
                     // 所以就应该认为这个点是边缘点
+                    // s>0.1 也就是要求点到直线的距离ld2要小于1m
+                    // s越大说明ld2越小(离边缘线越近)，这样就说明点pointOri在直线上
                     if (s > 0.1) {
                         laserCloudOri->push_back(pointOri);
                         coeffSel->push_back(coeff);
@@ -1281,6 +1319,8 @@ public:
         }
     }
 
+    // 这部分的代码是基于高斯牛顿法的优化，不是zhang ji论文中提到的基于L-M的优化方法
+    // 这部分的代码使用旋转矩阵对欧拉角求导，优化欧拉角，不是zhang ji论文中提到的使用angle-axis的优化
     bool LMOptimization(int iterCount){
         float srx = sin(transformTobeMapped[0]);
         float crx = cos(transformTobeMapped[0]);
@@ -1290,6 +1330,7 @@ public:
         float crz = cos(transformTobeMapped[2]);
 
         int laserCloudSelNum = laserCloudOri->points.size();
+        // laser cloud original 点云太少，就跳过这次循环
         if (laserCloudSelNum < 50) {
             return false;
         }
@@ -1300,14 +1341,18 @@ public:
         cv::Mat matB(laserCloudSelNum, 1, CV_32F, cv::Scalar::all(0));
         cv::Mat matAtB(6, 1, CV_32F, cv::Scalar::all(0));
         cv::Mat matX(6, 1, CV_32F, cv::Scalar::all(0));
+
         for (int i = 0; i < laserCloudSelNum; i++) {
             pointOri = laserCloudOri->points[i];
             coeff = coeffSel->points[i];
 
+            // 求雅克比矩阵中的元素，距离d对roll角度的偏导量即d(d)/d(roll)
+            // 更详细的数学推导参看wykxwyc.github.io
             float arx = (crx*sry*srz*pointOri.x + crx*crz*sry*pointOri.y - srx*sry*pointOri.z) * coeff.x
                       + (-srx*srz*pointOri.x - crz*srx*pointOri.y - crx*pointOri.z) * coeff.y
                       + (crx*cry*srz*pointOri.x + crx*cry*crz*pointOri.y - cry*srx*pointOri.z) * coeff.z;
 
+            // 同上，求解的是对pitch的偏导量
             float ary = ((cry*srx*srz - crz*sry)*pointOri.x 
                       + (sry*srz + cry*crz*srx)*pointOri.y + crx*cry*pointOri.z) * coeff.x
                       + ((-cry*crz - srx*sry*srz)*pointOri.x 
@@ -1317,24 +1362,54 @@ public:
                       + (crx*crz*pointOri.x - crx*srz*pointOri.y) * coeff.y
                       + ((sry*srz + cry*crz*srx)*pointOri.x + (crz*sry-cry*srx*srz)*pointOri.y)*coeff.z;
 
+
+            /*
+            在求点到直线的距离时，coeff表示的是如下内容
+            [la,lb,lc]表示的是点到直线的垂直连线方向，s是长度
+            coeff.x = s * la;
+            coeff.y = s * lb;
+            coeff.z = s * lc;
+            coeff.intensity = s * ld2;
+
+            在求点到平面的距离时，coeff表示的是
+            [pa,pb,pc]表示过外点的平面的法向量，s是线的长度
+            coeff.x = s * pa;
+            coeff.y = s * pb;
+            coeff.z = s * pc;
+            coeff.intensity = s * pd2;
+            */
             matA.at<float>(i, 0) = arx;
             matA.at<float>(i, 1) = ary;
             matA.at<float>(i, 2) = arz;
+
+            // 这部分是雅克比矩阵中距离对平移的偏导
             matA.at<float>(i, 3) = coeff.x;
             matA.at<float>(i, 4) = coeff.y;
             matA.at<float>(i, 5) = coeff.z;
+
+            // 残差项
             matB.at<float>(i, 0) = -coeff.intensity;
         }
+
+        // 将矩阵由matA转置生成matAt
+        // 先进行计算，以便于后边调用 cv::solve求解
         cv::transpose(matA, matAt);
         matAtA = matAt * matA;
         matAtB = matAt * matB;
+
+        // 利用高斯牛顿法进行求解，
+        // 高斯牛顿法的原型是J^(T)*J * delta(x) = -J*f(x)
+        // J是雅克比矩阵，这里是A，f(x)是优化目标，这里是-B(符号在给B赋值时候就放进去了)
+        // 通过QR分解的方式，求解matAtA*matX=matAtB，得到解matX
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
 
+        // iterCount==0 说明是第一次迭代，需要初始化
         if (iterCount == 0) {
             cv::Mat matE(1, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV(6, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV2(6, 6, CV_32F, cv::Scalar::all(0));
 
+            // 对近似的Hessian矩阵求特征值和特征向量，
             cv::eigen(matAtA, matE, matV);
             matV.copyTo(matV2);
 
@@ -1375,6 +1450,7 @@ public:
                             pow(matX.at<float>(4, 0) * 100, 2) +
                             pow(matX.at<float>(5, 0) * 100, 2));
 
+        // 旋转或者平移量足够小就停止这次迭代过程
         if (deltaR < 0.05 && deltaT < 0.05) {
             return true;
         }
@@ -1392,7 +1468,7 @@ public:
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
             for (int iterCount = 0; iterCount < 10; iterCount++) {
-
+                // 用for循环控制迭代次数，最多迭代10次
                 laserCloudOri->clear();
                 coeffSel->clear();
 
@@ -1403,6 +1479,7 @@ public:
                     break;              
             }
 
+            // 迭代结束更新相关的转移矩阵
             transformUpdate();
         }
     }
@@ -1420,8 +1497,6 @@ public:
                 +(previousRobotPosPoint.z-currentRobotPosPoint.z)*(previousRobotPosPoint.z-currentRobotPosPoint.z)) < 0.3){
             saveThisKeyFrame = false;
         }
-
-        
 
         if (saveThisKeyFrame == false && !cloudKeyPoses3D->points.empty())
         	return;
@@ -1579,6 +1654,7 @@ public:
 
                 downsampleCurrentScan();
 
+                // 当前扫描进行边缘优化，图优化以及进行LM优化的过程
                 scan2MapOptimization();
 
                 saveKeyFramesAndFactor();
