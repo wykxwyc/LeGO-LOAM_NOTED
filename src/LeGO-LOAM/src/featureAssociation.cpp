@@ -981,7 +981,13 @@ public:
 
     void TransformToStart(PointType const * const pi, PointType * const po)
     {
-        // intensity代表的是时间戳，s表示一个时间长度
+        // intensity代表的是：整数部分ring序号，小数部分是当前点在这一圈中所花的时间
+        // 关于intensity， 参考 adjustDistortion() 函数中的定义
+        // s代表的其实是一个比例，s的计算方法应该如下：
+        // s=(pi->intensity - int(pi->intensity))/SCAN_PERIOD
+        // ===> SCAN_PERIOD=0.1(雷达频率为10hz)
+        // 以上理解感谢github用户StefanGlaser
+        // https://github.com/laboshinl/loam_velodyne/issues/29
         float s = 10 * (pi->intensity - int(pi->intensity));
 
         float rx = s * transformCur[0];
@@ -1005,8 +1011,10 @@ public:
         po->intensity = pi->intensity;
     }
 
+    // 先转到start，再从start旋转到end
     void TransformToEnd(PointType const * const pi, PointType * const po)
     {
+        // 关于s, 参看上面  TransformToStart() 的注释
         float s = 10 * (pi->intensity - int(pi->intensity));
 
         float rx = s * transformCur[0];
@@ -1075,9 +1083,18 @@ public:
         po->intensity = int(pi->intensity);
     }
 
+    // (rx, ry, rz, imuPitchStart, imuYawStart, imuRollStart, 
+    //  imuPitchLast, imuYawLast, imuRollLast, rx, ry, rz)
     void PluginIMURotation(float bcx, float bcy, float bcz, float blx, float bly, float blz, 
                            float alx, float aly, float alz, float &acx, float &acy, float &acz)
     {
+        // 参考：https://www.cnblogs.com/ReedLW/p/9005621.html
+        //                    -imuStart     imuEnd     0
+        // transformSum.rot= R          * R        * R
+        //                    YXZ           ZXY        k+1
+        // bcx,bcy,bcz (rx, ry, rz)构成了 R_(k+1)^(0)
+        // blx,bly,blz（imuPitchStart, imuYawStart, imuRollStart） 构成了 R_(YXZ)^(-imuStart)
+        // alx,aly,alz（imuPitchLast, imuYawLast, imuRollLast）构成了 R_(ZXY)^(imuEnd)
         float sbcx = sin(bcx);
         float cbcx = cos(bcx);
         float sbcy = sin(bcy);
@@ -1138,6 +1155,20 @@ public:
     void AccumulateRotation(float cx, float cy, float cz, float lx, float ly, float lz, 
                             float &ox, float &oy, float &oz)
     {
+        // 参考：https://www.cnblogs.com/ReedLW/p/9005621.html
+        // 0--->(cx,cy,cz)--->(lx,ly,lz)
+        // 从0时刻到(cx,cy,cz),然后在(cx,cy,cz)的基础上又旋转(lx,ly,lz)
+        // 求最后总的位姿结果是什么？
+        // R*p_cur = R_c*R_l*p_cur  ==> R=R_c* R_l
+        //
+        //     |cly*clz+sly*slx*slz  clz*sly*slx-cly*slz  clx*sly|
+        // R_l=|    clx*slz                 clx*clz          -slx|
+        //     |cly*slx*slz-clz*sly  cly*clz*slx+sly*slz  cly*clx|
+        // R_c=...
+        // -srx=(ccx*scy,-scx,cly*clx)*(clx*slz,clx*clz,-slx)
+        // ...
+        // 然后根据R再来求(ox,oy,oz)
+
         float srx = cos(lx)*cos(cx)*sin(ly)*sin(cz) - cos(cx)*cos(cz)*sin(lx) - cos(lx)*cos(ly)*sin(cx);
         ox = -asin(srx);
 
@@ -1294,7 +1325,7 @@ public:
                 if (pointSearchSqDis[0] < nearestFeatureSearchSqDist) {
                     closestPointInd = pointSearchInd[0];
 					
-                    // point.intensity 保存的是什么值??? 第几次scan?
+                    // point.intensity 保存的是什么值? 第几次scan?
                     // thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
                     // fullInfoCloud->points[index].intensity = range;
                     // 在imageProjection.cpp文件中有上述两行代码，两种类型的值，应该存的是上面一个
@@ -1305,7 +1336,8 @@ public:
                     float pointSqDis, minPointSqDis2 = nearestFeatureSearchSqDist, minPointSqDis3 = nearestFeatureSearchSqDist;
                     for (int j = closestPointInd + 1; j < surfPointsFlatNum; j++) {
 
-                        // int类型的值加上2.5??? 为什么不直接加上2?
+                        // int类型的值加上2.5? 为什么不直接加上2?
+                        // 四舍五入
                         if (int(laserCloudSurfLast->points[j].intensity) > closestPointScan + 2.5) {
                             break;
                         }
@@ -1872,11 +1904,13 @@ public:
     void integrateTransformation(){
         float rx, ry, rz, tx, ty, tz; 
 
-        // AccumulateRotation作用将局部旋转坐标转换至全局旋转坐标
+        // AccumulateRotation作用
+        // 将计算的两帧之间的位姿“累加”起来，获得相对于第一帧的旋转矩阵
+        // transformSum + (-transformCur) =(rx,ry,rz)
         AccumulateRotation(transformSum[0], transformSum[1], transformSum[2], 
                            -transformCur[0], -transformCur[1], -transformCur[2], rx, ry, rz);
 
-        // 接着转移到世界坐标系下
+        // 进行平移分量的更新
         float x1 = cos(rz) * (transformCur[3] - imuShiftFromStartX) 
                  - sin(rz) * (transformCur[4] - imuShiftFromStartY);
         float y1 = sin(rz) * (transformCur[3] - imuShiftFromStartX) 
@@ -1891,7 +1925,8 @@ public:
         ty = transformSum[4] - y2;
         tz = transformSum[5] - (-sin(ry) * x2 + cos(ry) * z2);
 
-        // 插入imu旋转，更新位姿
+        // 与accumulateRotatio联合起来更新transformSum的rotation部分的工作
+        // 可视为transformToEnd的下部分的逆过程
         PluginIMURotation(rx, ry, rz, imuPitchStart, imuYawStart, imuRollStart, 
                           imuPitchLast, imuYawLast, imuRollLast, rx, ry, rz);
 
